@@ -20,6 +20,16 @@ enum UserType {
     Adopter,
 }
 
+// Pet Gender enum
+#[derive(
+    candid::CandidType, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default, Debug,
+)]
+enum PetGender {
+    #[default]
+    Male,
+    Female,
+}
+
 // PetStatus enum
 #[derive(
     candid::CandidType, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default, Debug,
@@ -57,9 +67,10 @@ struct Pet {
     id: u64,
     owner_id: u64,
     name: String,
+    gender: PetGender,
     species: String,
     breed: String,
-    age: u32,
+    age_months: u32,
     description: String,
     status: PetStatus,
     created_at: u64,
@@ -253,11 +264,11 @@ struct UserPayload {
 struct PetPayload {
     owner_id: u64,
     name: String,
+    gender: PetGender,
     species: String,
     breed: String,
-    age: u32,
+    age_months: u32,
     description: String,
-    status: PetStatus,
 }
 
 // AdoptionRequest Payload
@@ -265,7 +276,6 @@ struct PetPayload {
 struct AdoptionRequestPayload {
     pet_id: u64,
     adopter_id: u64,
-    status: AdoptionStatus,
 }
 
 // PetCareEvent Payload
@@ -302,6 +312,18 @@ fn create_user(payload: UserPayload) -> Result<User, String> {
         return Err("Name and contact cannot be empty".to_string());
     }
 
+    // Check if user with the same contact or name already exists
+    let user_exists = USERS_STORAGE.with(|storage| {
+        storage
+            .borrow()
+            .iter()
+            .any(|(_, user)| user.name == payload.name || user.contact == payload.contact)
+    });
+
+    if user_exists {
+        return Err("User with the same name or contact already exists.".to_string());
+    }
+
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -318,6 +340,44 @@ fn create_user(payload: UserPayload) -> Result<User, String> {
     };
 
     USERS_STORAGE.with(|storage| storage.borrow_mut().insert(id, user.clone()));
+    Ok(user)
+}
+
+// Function to update user profile
+#[ic_cdk::update]
+fn update_user_profile(id: u64, payload: UserPayload) -> Result<User, String> {
+    if payload.name.is_empty() || payload.contact.is_empty() {
+        return Err("Name and contact cannot be empty".to_string());
+    }
+
+    // Check if user exists
+    let user_exists = USERS_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !user_exists {
+        return Err("User ID does not exist.".to_string());
+    }
+
+    let user = User {
+        id,
+        name: payload.name,
+        contact: payload.contact,
+        user_type: payload.user_type,
+        created_at: time(),
+    };
+
+    USERS_STORAGE.with(|storage| storage.borrow_mut().insert(id, user.clone()));
+    Ok(user)
+}
+
+// Function for a user to delete their profile
+#[ic_cdk::update]
+fn delete_user_profile(id: u64) -> Result<User, String> {
+    // Check if user exists
+    let user_exists = USERS_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !user_exists {
+        return Err("User ID does not exist.".to_string());
+    }
+
+    let user = USERS_STORAGE.with(|storage| storage.borrow_mut().remove(&id).unwrap());
     Ok(user)
 }
 
@@ -341,8 +401,7 @@ fn get_all_users() -> Result<Vec<User>, String> {
 // Function to create a new pet
 #[ic_cdk::update]
 fn create_pet(payload: PetPayload) -> Result<Pet, String> {
-    if payload.owner_id == 0
-        || payload.name.is_empty()
+    if payload.name.is_empty()
         || payload.species.is_empty()
         || payload.breed.is_empty()
         || payload.description.is_empty()
@@ -350,12 +409,14 @@ fn create_pet(payload: PetPayload) -> Result<Pet, String> {
         return Err("All fields must be provided.".to_string());
     }
 
+    // Check if owner exists
     let owner_exists =
         USERS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.owner_id));
     if !owner_exists {
         return Err("Owner ID does not exist.".to_string());
     }
 
+    // Create a new pet
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -367,16 +428,71 @@ fn create_pet(payload: PetPayload) -> Result<Pet, String> {
         id,
         owner_id: payload.owner_id,
         name: payload.name,
+        gender: payload.gender,
         species: payload.species,
         breed: payload.breed,
-        age: payload.age,
+        age_months: payload.age_months,
         description: payload.description,
-        status: payload.status,
+        status: PetStatus::Available,
         created_at: time(),
     };
 
     PETS_STORAGE.with(|storage| storage.borrow_mut().insert(id, pet.clone()));
     Ok(pet)
+}
+
+// Fetch pet by Pet Species
+#[ic_cdk::query]
+fn get_pets_by_species(species: String) -> Result<Vec<Pet>, String> {
+    PETS_STORAGE.with(|storage| {
+        let stable_btree_map = &*storage.borrow();
+        let records: Vec<Pet> = stable_btree_map
+            .iter()
+            .map(|(_, record)| record.clone())
+            .filter(|pet| pet.species == species)
+            .collect();
+        if records.is_empty() {
+            Err("No pets found.".to_string())
+        } else {
+            Ok(records)
+        }
+    })
+}
+
+// Fetch pet by Pet Breed
+#[ic_cdk::query]
+fn get_pets_by_breed(breed: String) -> Result<Vec<Pet>, String> {
+    PETS_STORAGE.with(|storage| {
+        let stable_btree_map = &*storage.borrow();
+        let records: Vec<Pet> = stable_btree_map
+            .iter()
+            .map(|(_, record)| record.clone())
+            .filter(|pet| pet.breed == breed)
+            .collect();
+        if records.is_empty() {
+            Err("No pets found.".to_string())
+        } else {
+            Ok(records)
+        }
+    })
+}
+
+// Fetch pet by Owner Id
+#[ic_cdk::query]
+fn get_pets_by_owner_id(owner_id: u64) -> Result<Vec<Pet>, String> {
+    PETS_STORAGE.with(|storage| {
+        let stable_btree_map = &*storage.borrow();
+        let records: Vec<Pet> = stable_btree_map
+            .iter()
+            .map(|(_, record)| record.clone())
+            .filter(|pet| pet.owner_id == owner_id)
+            .collect();
+        if records.is_empty() {
+            Err("No pets found.".to_string())
+        } else {
+            Ok(records)
+        }
+    })
 }
 
 // Function to retrieve all pets
@@ -403,17 +519,19 @@ fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRe
         return Err("Pet ID and Adopter ID must be provided.".to_string());
     }
 
+    // Check if pet exists
     let pet_exists = PETS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.pet_id));
     if !pet_exists {
         return Err("Pet ID does not exist.".to_string());
     }
 
+    // Check if adopter exists
     let adopter_exists =
         USERS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.adopter_id));
     if !adopter_exists {
         return Err("Adopter ID does not exist.".to_string());
     }
-
+    
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -425,7 +543,7 @@ fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRe
         id,
         pet_id: payload.pet_id,
         adopter_id: payload.adopter_id,
-        status: payload.status,
+        status: AdoptionStatus::Pending,
         requested_at: time(),
         approved_at: None,
     };
@@ -434,6 +552,8 @@ fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRe
         .with(|storage| storage.borrow_mut().insert(id, adoption_request.clone()));
     Ok(adoption_request)
 }
+
+// Function to approve an adoption request using adoption request id
 
 // Function to retrieve all adoption requests
 #[ic_cdk::query]
@@ -455,14 +575,11 @@ fn get_all_adoption_requests() -> Result<Vec<AdoptionRequest>, String> {
 // Function to create a new pet care event
 #[ic_cdk::update]
 fn create_pet_care_event(payload: PetCareEventPayload) -> Result<PetCareEvent, String> {
-    if payload.title.is_empty()
-        || payload.description.is_empty()
-        || payload.location.is_empty()
-        || payload.organizer_id == 0
-    {
+    if payload.title.is_empty() || payload.description.is_empty() || payload.location.is_empty() {
         return Err("All fields must be provided.".to_string());
     }
 
+    // Check if organizer exists
     let organizer_exists =
         USERS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.organizer_id));
     if !organizer_exists {
@@ -514,11 +631,13 @@ fn create_feedback(payload: FeedbackPayload) -> Result<Feedback, String> {
         return Err("User ID, feedback, and rating must be provided.".to_string());
     }
 
+    // Check if user exists
     let user_exists = USERS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.user_id));
     if !user_exists {
         return Err("User ID does not exist.".to_string());
     }
 
+    // Check if pet exists
     if let Some(ref pid) = payload.pet_id {
         let pet_exists = PETS_STORAGE.with(|storage| storage.borrow().contains_key(pid));
         if !pet_exists {
@@ -526,6 +645,7 @@ fn create_feedback(payload: FeedbackPayload) -> Result<Feedback, String> {
         }
     }
 
+    // Check if event exists
     if let Some(ref eid) = payload.event_id {
         let event_exists =
             PET_CARE_EVENTS_STORAGE.with(|storage| storage.borrow().contains_key(eid));
@@ -557,7 +677,7 @@ fn create_feedback(payload: FeedbackPayload) -> Result<Feedback, String> {
 
 // Function to retrieve all feedback
 #[ic_cdk::query]
-fn get_all_feedback() -> Result<Vec<Feedback>, String> {
+fn get_all_feedbacks() -> Result<Vec<Feedback>, String> {
     FEEDBACKS_STORAGE.with(|storage| {
         let stable_btree_map = &*storage.borrow();
         let records: Vec<Feedback> = stable_btree_map
@@ -579,6 +699,7 @@ fn create_donation(payload: DonationPayload) -> Result<Donation, String> {
         return Err("Donor ID and amount must be provided.".to_string());
     }
 
+    // Check if donor exists
     let donor_exists =
         USERS_STORAGE.with(|storage| storage.borrow().contains_key(&payload.donor_id));
     if !donor_exists {
