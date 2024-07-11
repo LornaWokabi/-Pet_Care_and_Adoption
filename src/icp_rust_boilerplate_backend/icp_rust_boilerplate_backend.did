@@ -6,11 +6,7 @@ type AdoptionRequest = record {
   approved_at : opt nat64;
   requested_at : nat64;
 };
-type AdoptionRequestPayload = record {
-  status : AdoptionStatus;
-  adopter_id : nat64;
-  pet_id : nat64;
-};
+type AdoptionRequestPayload = record { adopter_id : nat64; pet_id : nat64 };
 type AdoptionStatus = variant { Approved; Rejected; Pending };
 type Donation = record {
   id : nat64;
@@ -37,12 +33,13 @@ type FeedbackPayload = record {
 };
 type Pet = record {
   id : nat64;
-  age : nat32;
   status : PetStatus;
   name : text;
   description : text;
   created_at : nat64;
+  age_months : nat32;
   owner_id : nat64;
+  gender : PetGender;
   breed : text;
   species : text;
 };
@@ -62,12 +59,13 @@ type PetCareEventPayload = record {
   description : text;
   location : text;
 };
+type PetGender = variant { Male; Female };
 type PetPayload = record {
-  age : nat32;
-  status : PetStatus;
   name : text;
   description : text;
+  age_months : nat32;
   owner_id : nat64;
+  gender : PetGender;
   breed : text;
   species : text;
 };
@@ -90,20 +88,37 @@ type User = record {
   contact : text;
   name : text;
   created_at : nat64;
+  email : text;
 };
-type UserPayload = record { user_type : UserType; contact : text; name : text };
+type UserPayload = record {
+  user_type : UserType;
+  contact : text;
+  name : text;
+  email : text;
+};
 type UserType = variant { Shelter; Adopter; Owner };
 service : {
+  approve_adoption_request : (nat64) -> (Result);
   create_adoption_request : (AdoptionRequestPayload) -> (Result);
   create_donation : (DonationPayload) -> (Result_1);
   create_feedback : (FeedbackPayload) -> (Result_2);
   create_pet : (PetPayload) -> (Result_3);
   create_pet_care_event : (PetCareEventPayload) -> (Result_4);
   create_user : (UserPayload) -> (Result_5);
+  delete_user_profile : (nat64) -> (Result_5);
   get_all_adoption_requests : () -> (Result_6) query;
   get_all_donations : () -> (Result_7) query;
-  get_all_feedback : () -> (Result_8) query;
+  get_all_feedbacks : () -> (Result_8) query;
   get_all_pet_care_events : () -> (Result_9) query;
   get_all_pets : () -> (Result_10) query;
   get_all_users : () -> (Result_11) query;
+  get_feedback_by_user_id : (nat64) -> (Result_8) query;
+  get_pets_by_breed : (text) -> (Result_10) query;
+  get_pets_by_chunk : (nat64, nat64) -> (Result_10) query;
+  get_pets_by_owner_id : (nat64) -> (Result_10) query;
+  get_pets_by_species : (text) -> (Result_10) query;
+  get_users_by_chunk : (nat64, nat64) -> (Result_11) query;
+  reject_adoption_request : (nat64) -> (Result);
+  update_pet : (nat64, PetPayload) -> (Result_3);
+  update_user_profile : (nat64, UserPayload) -> (Result_5);
 }

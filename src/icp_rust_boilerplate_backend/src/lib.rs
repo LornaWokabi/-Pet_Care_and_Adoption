@@ -1,3 +1,4 @@
+// Import necessary dependencies
 #[macro_use]
 extern crate serde;
 use candid::{Decode, Encode};
@@ -56,6 +57,7 @@ enum AdoptionStatus {
 struct User {
     id: u64,
     name: String,
+    email: String,
     contact: String,
     user_type: UserType,
     created_at: u64,
@@ -255,6 +257,7 @@ thread_local! {
 #[derive(candid::CandidType, Deserialize, Serialize)]
 struct UserPayload {
     name: String,
+    email: String,
     contact: String,
     user_type: UserType,
 }
@@ -308,20 +311,19 @@ struct DonationPayload {
 // Function to create a new user
 #[ic_cdk::update]
 fn create_user(payload: UserPayload) -> Result<User, String> {
-    if payload.name.is_empty() || payload.contact.is_empty() {
-        return Err("Name and contact cannot be empty".to_string());
+    if payload.name.is_empty() || payload.contact.is_empty() || payload.email.is_empty() {
+        return Err("Name, contact, and email cannot be empty".to_string());
     }
 
-    // Check if user with the same contact or name already exists
+    // Check if user with the same contact, name, or email already exists
     let user_exists = USERS_STORAGE.with(|storage| {
-        storage
-            .borrow()
-            .iter()
-            .any(|(_, user)| user.name == payload.name || user.contact == payload.contact)
+        storage.borrow().iter().any(|(_, user)| {
+            user.name == payload.name || user.contact == payload.contact || user.email == payload.email
+        })
     });
 
     if user_exists {
-        return Err("User with the same name or contact already exists.".to_string());
+        return Err("User with the same name, contact, or email already exists.".to_string());
     }
 
     let id = ID_COUNTER
@@ -334,6 +336,7 @@ fn create_user(payload: UserPayload) -> Result<User, String> {
     let user = User {
         id,
         name: payload.name,
+        email: payload.email,
         contact: payload.contact,
         user_type: payload.user_type,
         created_at: time(),
@@ -346,8 +349,8 @@ fn create_user(payload: UserPayload) -> Result<User, String> {
 // Function to update user profile
 #[ic_cdk::update]
 fn update_user_profile(id: u64, payload: UserPayload) -> Result<User, String> {
-    if payload.name.is_empty() || payload.contact.is_empty() {
-        return Err("Name and contact cannot be empty".to_string());
+    if payload.name.is_empty() || payload.contact.is_empty() || payload.email.is_empty() {
+        return Err("Name, contact, and email cannot be empty".to_string());
     }
 
     // Check if user exists
@@ -356,9 +359,21 @@ fn update_user_profile(id: u64, payload: UserPayload) -> Result<User, String> {
         return Err("User ID does not exist.".to_string());
     }
 
+    // Check for uniqueness of the updated email
+    let email_exists = USERS_STORAGE.with(|storage| {
+        storage
+            .borrow()
+            .iter()
+            .any(|(_, user)| user.email == payload.email && user.id != id)
+    });
+    if email_exists {
+        return Err("Email is already in use by another user.".to_string());
+    }
+
     let user = User {
         id,
         name: payload.name,
+        email: payload.email,
         contact: payload.contact,
         user_type: payload.user_type,
         created_at: time(),
@@ -398,6 +413,36 @@ fn get_all_users() -> Result<Vec<User>, String> {
     })
 }
 
+// Function to retrieve users in chunks (pagination)
+#[ic_cdk::query]
+fn get_users_by_chunk(offset: u64, limit: u64) -> Result<Vec<User>, String> {
+    // Ensure offset is not greater than the total number of users
+    let total_users = USERS_STORAGE.with(|storage| storage.borrow().len() as u64);
+    if offset >= total_users {
+        return Err(
+            "Invalid input: Offset is greater than the total number of users.".to_string(),
+        );
+    }
+
+    let users = USERS_STORAGE.with(|storage| {
+        storage
+            .borrow()
+            .iter()
+            .map(|(_, user)| user.clone())
+            .collect::<Vec<User>>()
+    });
+
+    if users.is_empty() {
+        return Err("No users found.".to_string());
+    }
+
+    let start = offset as usize;
+    let end = (offset + limit).min(total_users) as usize;
+    let users_chunk = users[start..end].to_vec();
+
+    Ok(users_chunk)
+}
+
 // Function to create a new pet
 #[ic_cdk::update]
 fn create_pet(payload: PetPayload) -> Result<Pet, String> {
@@ -423,6 +468,40 @@ fn create_pet(payload: PetPayload) -> Result<Pet, String> {
             counter.borrow_mut().set(current_value + 1)
         })
         .expect("Cannot increment ID counter");
+
+    let pet = Pet {
+        id,
+        owner_id: payload.owner_id,
+        name: payload.name,
+        gender: payload.gender,
+        species: payload.species,
+        breed: payload.breed,
+        age_months: payload.age_months,
+        description: payload.description,
+        status: PetStatus::Available,
+        created_at: time(),
+    };
+
+    PETS_STORAGE.with(|storage| storage.borrow_mut().insert(id, pet.clone()));
+    Ok(pet)
+}
+
+// Function to update pet details
+#[ic_cdk::update]
+fn update_pet(id: u64, payload: PetPayload) -> Result<Pet, String> {
+    if payload.name.is_empty()
+        || payload.species.is_empty()
+        || payload.breed.is_empty()
+        || payload.description.is_empty()
+    {
+        return Err("All fields must be provided.".to_string());
+    }
+
+    // Check if pet exists
+    let pet_exists = PETS_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !pet_exists {
+        return Err("Pet ID does not exist.".to_string());
+    }
 
     let pet = Pet {
         id,
@@ -512,6 +591,36 @@ fn get_all_pets() -> Result<Vec<Pet>, String> {
     })
 }
 
+// Function to retrieve pets in chunks (pagination)
+#[ic_cdk::query]
+fn get_pets_by_chunk(offset: u64, limit: u64) -> Result<Vec<Pet>, String> {
+    // Ensure offset is not greater than the total number of pets
+    let total_pets = PETS_STORAGE.with(|storage| storage.borrow().len() as u64);
+    if offset >= total_pets {
+        return Err(
+            "Invalid input: Offset is greater than the total number of pets.".to_string(),
+        );
+    }
+
+    let pets = PETS_STORAGE.with(|storage| {
+        storage
+            .borrow()
+            .iter()
+            .map(|(_, pet)| pet.clone())
+            .collect::<Vec<Pet>>()
+    });
+
+    if pets.is_empty() {
+        return Err("No pets found.".to_string());
+    }
+
+    let start = offset as usize;
+    let end = (offset + limit).min(total_pets) as usize;
+    let pets_chunk = pets[start..end].to_vec();
+
+    Ok(pets_chunk)
+}
+
 // Function to create a new adoption request
 #[ic_cdk::update]
 fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRequest, String> {
@@ -531,7 +640,7 @@ fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRe
     if !adopter_exists {
         return Err("Adopter ID does not exist.".to_string());
     }
-    
+
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -553,7 +662,48 @@ fn create_adoption_request(payload: AdoptionRequestPayload) -> Result<AdoptionRe
     Ok(adoption_request)
 }
 
-// Function to approve an adoption request using adoption request id
+// Function to approve an adoption request
+#[ic_cdk::update]
+fn approve_adoption_request(id: u64) -> Result<AdoptionRequest, String> {
+    // Check if adoption request exists
+    let adoption_request = ADOPTION_REQUESTS_STORAGE.with(|storage| storage.borrow().get(&id));
+    match adoption_request {
+        Some(mut request) => {
+            request.status = AdoptionStatus::Approved;
+            request.approved_at = Some(time());
+
+            // Update pet status to Adopted
+            PETS_STORAGE.with(|storage| {
+                if let Some(mut pet) = storage.borrow().get(&request.pet_id) {
+                    pet.status = PetStatus::Adopted;
+                    storage.borrow_mut().insert(pet.id, pet);
+                }
+            });
+
+            ADOPTION_REQUESTS_STORAGE
+                .with(|storage| storage.borrow_mut().insert(id, request.clone()));
+            Ok(request)
+        }
+        None => Err("Adoption request ID does not exist.".to_string()),
+    }
+}
+
+// Function to reject an adoption request
+#[ic_cdk::update]
+fn reject_adoption_request(id: u64) -> Result<AdoptionRequest, String> {
+    // Check if adoption request exists
+    let adoption_request = ADOPTION_REQUESTS_STORAGE.with(|storage| storage.borrow().get(&id));
+    match adoption_request {
+        Some(mut request) => {
+            request.status = AdoptionStatus::Rejected;
+
+            ADOPTION_REQUESTS_STORAGE
+                .with(|storage| storage.borrow_mut().insert(id, request.clone()));
+            Ok(request)
+        }
+        None => Err("Adoption request ID does not exist.".to_string()),
+    }
+}
 
 // Function to retrieve all adoption requests
 #[ic_cdk::query]
@@ -686,6 +836,24 @@ fn get_all_feedbacks() -> Result<Vec<Feedback>, String> {
             .collect();
         if records.is_empty() {
             Err("No feedback found.".to_string())
+        } else {
+            Ok(records)
+        }
+    })
+}
+
+// Function to retrieve feedback by user ID
+#[ic_cdk::query]
+fn get_feedback_by_user_id(user_id: u64) -> Result<Vec<Feedback>, String> {
+    FEEDBACKS_STORAGE.with(|storage| {
+        let stable_btree_map = &*storage.borrow();
+        let records: Vec<Feedback> = stable_btree_map
+            .iter()
+            .map(|(_, record)| record.clone())
+            .filter(|feedback| feedback.user_id == user_id)
+            .collect();
+        if records.is_empty() {
+            Err("No feedback found for the specified user.".to_string())
         } else {
             Ok(records)
         }
